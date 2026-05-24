@@ -1,0 +1,31 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- virtualenvs ---
+venv/
+.venv/
+env/
+
+# --- per-session runtime data (sessions are per-machine; portable via zip when needed) ---
+sessions/
+
+# --- macOS / IDE ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- runtime / build artifacts ---
+*.log
+*.tmp
+*.bak
+/tmp/

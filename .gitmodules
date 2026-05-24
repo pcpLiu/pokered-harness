@@ -1,0 +1,4 @@
+[submodule "pokered-fork"]
+	path = pokered-fork
+	url = git@github.com:pcpLiu/pokered.git
+	branch = feat/llm-telemetry

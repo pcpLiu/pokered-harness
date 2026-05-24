@@ -1,0 +1,851 @@
+# Pokemon Red Telemetry Event Schema
+#
+# Catalog of player-observable events emitted by the instrumented pret/pokered fork.
+# Every event has a 1-byte ID assigned in engine/telemetry/event_ids.asm.
+# trigger.file paths are relative to the pokered-fork root.
+#
+# Categories: display | overworld | battle | menu | progress | meta
+#
+# Payload encoding: little-endian unless noted. String payloads use the game's
+# in-ROM character map (decoded to ASCII on the Python side via the charmap).
+# Multi-byte numeric payloads use the same byte order pret uses in WRAM.
+#
+# Required fields: id, category, trigger.file, trigger.function
+# Encouraged fields: payload, narrative_template, notes
+
+# ---------------------------------------------------------------------------
+# DISPLAY — text / dialog rendering
+# ---------------------------------------------------------------------------
+
+- id: text_display
+  category: display
+  trigger:
+    file: home/text.asm
+    function: PlaceString
+  payload:
+    string: text     # decoded string up to '@' terminator
+  narrative_template: "Text appeared: '{string}'"
+  notes: "Fires once per string render. DE holds source ptr, HL screen ptr. Capture full string before typewriter animation."
+
+- id: text_box_open
+  category: display
+  trigger:
+    file: home/text.asm
+    function: TextBoxBorder
+  payload:
+    width: u8        # box width (C register)
+    height: u8       # box height (B register)
+  narrative_template: "A text box opened ({width}x{height})."
+  notes: "Drawn before contents. Useful to bracket text_display events."
+
+- id: text_box_close
+  category: display
+  trigger:
+    file: home/textbox.asm
+    function: DisplayTextBoxID_
+  payload: {}
+  narrative_template: "Text box closed."
+  notes: "Red has no explicit close; emit when text-box-restoring code runs (after PrintText returns to overworld)."
+
+- id: text_paused
+  category: display
+  trigger:
+    file: home/text.asm
+    function: ContText
+  payload: {}
+  narrative_template: "Text is waiting for the player to press A."
+  notes: "Hook the cont-text continuation path; fires while typewriter is paused on '▼' arrow."
+
+- id: yes_no_prompt
+  category: display
+  trigger:
+    file: home/yes_no.asm
+    function: YesNoChoice
+  payload:
+    menu_id: u8      # wTwoOptionMenuID
+  narrative_template: "A Yes/No (or two-option) prompt opened (id={menu_id})."
+  notes: "Covers Yes/No, North/East, Heal/Cancel, etc. Result is set as carry on return — capture via a follow-up event if needed."
+
+# ---------------------------------------------------------------------------
+# OVERWORLD — movement, map transitions, NPC interaction
+# ---------------------------------------------------------------------------
+
+- id: map_loaded
+  category: overworld
+  trigger:
+    file: home/overworld.asm
+    function: LoadMapData
+  payload:
+    map_id: u8       # wCurMap
+    width: u8        # wCurMapWidth (in blocks)
+    height: u8       # wCurMapHeight
+    tileset: u8      # wCurMapTileset
+  narrative_template: "Entered map {map_id}."
+  notes: "Most upstream entry: any map change passes through here, including warp, fly, blackout."
+
+- id: enter_map_anim
+  category: overworld
+  trigger:
+    file: engine/overworld/player_animations.asm
+    function: EnterMapAnim
+  payload: {}
+  narrative_template: "Map entry animation played."
+  notes: "Plays after LoadMapData when entering via warp/door. Separates 'data loaded' from 'visible to player'."
+
+- id: player_moved
+  category: overworld
+  trigger:
+    file: home/overworld.asm
+    function: OverworldLoop
+  payload:
+    x: u8            # wXCoord
+    y: u8            # wYCoord
+    direction: u8    # wPlayerDirection (0=down, 4=up, 8=left, $C=right per sprite_constants)
+    map_id: u8       # wCurMap
+  narrative_template: "Player moved to ({x},{y}) facing {direction}."
+  notes: "Hook after AdvancePlayerSprite finishes a tile of movement, not per-frame inside it. The wXCoord/wYCoord update is the trigger."
+
+- id: player_turned
+  category: overworld
+  trigger:
+    file: engine/overworld/turn_sprite.asm
+    function: TurnSprite
+  payload:
+    direction: u8    # wPlayerDirection
+  narrative_template: "Player turned to face {direction}."
+  notes: "Turn-only (no tile change). Distinct from player_moved."
+
+- id: player_blocked
+  category: overworld
+  trigger:
+    file: home/overworld.asm
+    function: CollisionCheckOnLand
+  payload:
+    direction: u8
+  narrative_template: "Player walked into a wall."
+  notes: "Emit when carry is set (collision). Fires the 'bump' sound; useful for agents that get stuck."
+
+- id: warp_used
+  category: overworld
+  trigger:
+    file: home/overworld.asm
+    function: HandleMidJump
+  payload:
+    src_map: u8      # wLastMap
+    dst_map: u8      # wCurMap (post-warp)
+    warp_id: u8      # wDestinationWarpID
+  narrative_template: "Player warped from map {src_map} to map {dst_map}."
+  notes: "Covers doors, stairs, holes, and ledge jumps. For ledges, emit ledge_jump separately."
+
+- id: door_entered
+  category: overworld
+  trigger:
+    file: engine/overworld/doors.asm
+    function: HandleDoors
+  payload:
+    door_tile: u8
+  narrative_template: "Player opened a door."
+  notes: "Door-tile animation; precedes warp_used by ~1 frame."
+
+- id: ledge_jump
+  category: overworld
+  trigger:
+    file: engine/overworld/ledges.asm
+    function: HandleLedges
+  payload:
+    direction: u8
+  narrative_template: "Player jumped a ledge."
+  notes: "Ledge hop animation; player position updates as the hop completes."
+
+- id: npc_interaction_start
+  category: overworld
+  trigger:
+    file: home/text_script.asm
+    function: DisplayTextID
+  payload:
+    text_id: u8      # hSpriteIndexOrTextID
+    map_id: u8       # wCurMap
+  narrative_template: "Interacted with NPC/sign (text_id={text_id}) on map {map_id}."
+  notes: "Universal entry for A-button text. Covers NPCs, signs, hidden objects."
+
+- id: trainer_sighted
+  category: overworld
+  trigger:
+    file: engine/overworld/trainer_sight.asm
+    function: TrainerWalkUpToPlayer
+  payload:
+    trainer_class: u8  # wTrainerClass
+    sprite_index: u8   # wSpriteIndex
+  narrative_template: "A trainer spotted the player!"
+  notes: "Fires when trainer begins walking up; battle_start follows shortly."
+
+- id: item_picked_up
+  category: overworld
+  trigger:
+    file: engine/events/pick_up_item.asm
+    function: PickUpItem
+  payload:
+    item_id: u8       # wCurItem
+    quantity: u8      # wCurItemQuantity
+  narrative_template: "Picked up {quantity}x item #{item_id}."
+  notes: "Overworld item ball pickup."
+
+- id: hidden_item_found
+  category: overworld
+  trigger:
+    file: engine/events/hidden_items.asm
+    function: HiddenItems
+  payload:
+    item_id: u8       # wCurItem
+  narrative_template: "Found a hidden item: #{item_id}."
+  notes: "Itemfinder-detectable; only the precise tile triggers."
+
+- id: bicycle_toggled
+  category: overworld
+  trigger:
+    file: engine/items/item_effects.asm
+    function: ItemUseBicycle
+  payload:
+    now_active: u8    # 1 if on, 0 if off (post-toggle wPlayerState)
+  narrative_template: "Bicycle {state}."
+  notes: "Player toggles bike on/off. Auto-on in Cycling Road via CheckForceBikeOrSurf."
+
+- id: surf_started
+  category: overworld
+  trigger:
+    file: engine/items/item_effects.asm
+    function: ItemUseSurfboard
+  payload: {}
+  narrative_template: "Player began surfing."
+  notes: "HM Surf; player's tile transitions to water."
+
+- id: fly_used
+  category: overworld
+  trigger:
+    file: engine/items/town_map.asm
+    function: LoadTownMap_Fly
+  payload:
+    destination_map: u8
+  narrative_template: "Player flew to map {destination_map}."
+  notes: "Capture chosen destination from wFlyLocation after confirm."
+
+- id: escape_rope_used
+  category: overworld
+  trigger:
+    file: engine/items/item_effects.asm
+    function: ItemUseEscapeRope
+  payload: {}
+  narrative_template: "Escape rope warped the player out."
+
+- id: field_move_used
+  category: overworld
+  trigger:
+    file: engine/overworld/field_move_messages.asm
+    function: PrintStrengthTxt
+  payload:
+    move_id: u8       # which HM
+  narrative_template: "A field move was used."
+  notes: "Covers Cut/Strength/Flash messages. Surf/Fly have dedicated events."
+
+- id: whiteout
+  category: overworld
+  trigger:
+    file: engine/events/black_out.asm
+    function: ResetStatusAndHalveMoneyOnBlackout
+  payload:
+    new_money_low: u8  # wPlayerMoney bytes
+    new_money_mid: u8
+    new_money_high: u8
+  narrative_template: "Whiteout — party wiped, half money lost."
+
+- id: safari_step
+  category: overworld
+  trigger:
+    file: engine/overworld/wild_mons.asm
+    function: LoadWildData
+  payload:
+    steps_remaining: u8  # wSafariSteps
+  narrative_template: "Safari step counter: {steps_remaining}."
+  notes: "Emit per overworld step inside the Safari Zone only."
+
+- id: repel_expired
+  category: overworld
+  trigger:
+    file: engine/overworld/wild_mons.asm
+    function: LoadWildData
+  payload: {}
+  narrative_template: "Repel wore off."
+  notes: "Hook when wRepelRemainingSteps decrements to 0."
+
+# ---------------------------------------------------------------------------
+# MENU — menus and on-screen UI other than text boxes
+# ---------------------------------------------------------------------------
+
+- id: menu_open
+  category: menu
+  trigger:
+    file: engine/menus/draw_start_menu.asm
+    function: DrawStartMenu
+  payload:
+    menu_id: u8       # wTopMenuItemX/wMenuWatchedKeys context — use wStartMenuCursorPosition
+  narrative_template: "Start menu opened."
+
+- id: menu_close
+  category: menu
+  trigger:
+    file: home/start_menu.asm
+    function: CloseStartMenu
+  payload: {}
+  narrative_template: "Start menu closed."
+
+- id: menu_cursor_move
+  category: menu
+  trigger:
+    file: home/list_menu.asm
+    function: HandleMenuInput
+  payload:
+    cursor_index: u8  # wCurrentMenuItem
+  narrative_template: "Menu cursor moved to index {cursor_index}."
+  notes: "Reusable across all list-style menus. Filter Python-side if too noisy."
+
+- id: bag_opened
+  category: menu
+  trigger:
+    file: engine/menus/start_sub_menus.asm
+    function: StartMenu_Item
+  payload: {}
+  narrative_template: "Bag opened."
+
+- id: pokedex_opened
+  category: menu
+  trigger:
+    file: engine/menus/pokedex.asm
+    function: ShowPokedexMenu
+  payload:
+    seen_count: u8    # CountSetBits over wPokedexSeen
+    owned_count: u8   # CountSetBits over wPokedexOwned
+  narrative_template: "Pokedex opened ({owned_count} owned, {seen_count} seen)."
+
+- id: party_menu_opened
+  category: menu
+  trigger:
+    file: engine/menus/party_menu.asm
+    function: DrawPartyMenu_
+  payload:
+    party_count: u8   # wPartyCount
+  narrative_template: "Party menu opened ({party_count} mons)."
+
+- id: pc_accessed
+  category: menu
+  trigger:
+    file: engine/menus/pc.asm
+    function: ActivatePC
+  payload: {}
+  narrative_template: "Used a PC."
+
+- id: bills_pc_opened
+  category: menu
+  trigger:
+    file: engine/menus/players_pc.asm
+    function: PlayerPC
+  payload:
+    current_box: u8   # wCurrentBoxNum
+  narrative_template: "Bill's PC opened (box {current_box})."
+
+- id: pokemart_opened
+  category: menu
+  trigger:
+    file: engine/events/pokemart.asm
+    function: DisplayPokemartDialogue_
+  payload: {}
+  narrative_template: "PokeMart opened."
+
+- id: pokemon_center_used
+  category: menu
+  trigger:
+    file: engine/events/pokecenter.asm
+    function: DisplayPokemonCenterDialogue_
+  payload: {}
+  narrative_template: "Pokemon Center healing started."
+
+- id: naming_screen_opened
+  category: menu
+  trigger:
+    file: engine/menus/naming_screen.asm
+    function: AskName
+  payload:
+    naming_type: u8   # wNamingScreenType
+  narrative_template: "A naming screen opened (type {naming_type})."
+
+# ---------------------------------------------------------------------------
+# PROGRESS — durable state changes (party, items, money, badges, dex)
+# ---------------------------------------------------------------------------
+
+- id: badge_obtained
+  category: progress
+  trigger:
+    file: home/inventory.asm
+    function: GiveItem
+  payload:
+    badge_bit: u8     # which bit in wObtainedBadges just got set
+    badges_bitmask: u8  # full wObtainedBadges
+  narrative_template: "Earned badge {badge_bit}."
+  notes: "Specific trigger is a scripted SetEventFlag for the badge in question. Hook in the scripted event handler tied to the gym win; spec to be refined when wiring each gym (see design notes)."
+
+- id: party_added
+  category: progress
+  trigger:
+    file: engine/pokemon/add_mon.asm
+    function: _AddPartyMon
+  payload:
+    species: u8       # wCurPartySpecies
+    level: u8         # wCurEnemyLVL or initial level argument
+    new_party_count: u8
+  narrative_template: "A Pokemon was added to the party (species {species}, lvl {level})."
+
+- id: party_removed
+  category: progress
+  trigger:
+    file: engine/pokemon/remove_mon.asm
+    function: RemovePokemon
+  payload:
+    slot: u8          # wWhichPokemon
+    new_party_count: u8
+  narrative_template: "A Pokemon was removed from the party (slot {slot})."
+
+- id: pokemon_received
+  category: progress
+  trigger:
+    file: engine/events/give_pokemon.asm
+    function: _GivePokemon
+  payload:
+    species: u8
+    level: u8
+  narrative_template: "Received Pokemon (species {species}, lvl {level})."
+  notes: "Covers starter and other scripted gifts (Magikarp, Eevee, etc.)."
+
+- id: item_obtained
+  category: progress
+  trigger:
+    file: home/give.asm
+    function: GiveItem
+  payload:
+    item_id: u8
+    quantity: u8
+  narrative_template: "Received {quantity}x item #{item_id}."
+  notes: "Scripted give. For overworld pickup use item_picked_up."
+
+- id: item_lost
+  category: progress
+  trigger:
+    file: home/inventory.asm
+    function: RemoveItemFromInventory
+  payload:
+    item_id: u8
+    quantity: u8
+  narrative_template: "Lost {quantity}x item #{item_id}."
+
+- id: tm_taught
+  category: progress
+  trigger:
+    file: engine/items/item_effects.asm
+    function: TeachMachineMove
+  payload:
+    tm_id: u8         # which TM/HM
+    target_slot: u8   # wWhichPokemon
+    move_id: u8
+  narrative_template: "TM/HM #{tm_id} taught (move {move_id})."
+
+- id: money_changed
+  category: progress
+  trigger:
+    file: home/money.asm
+    function: HasEnoughMoney
+  payload:
+    new_money_low: u8
+    new_money_mid: u8
+    new_money_high: u8
+    delta_sign: u8    # 0 = decreased, 1 = increased
+  narrative_template: "Money is now ${money}."
+  notes: "Hook the AddBCDPredef / SubBCDPredef callers in home/money.asm (after the write). Snapshot full 3-byte BCD."
+
+- id: pokedex_owned_flag_set
+  category: progress
+  trigger:
+    file: home/predef.asm
+    function: SetPokedexOwnedFlag
+  payload:
+    species: u8       # wd11e or input species
+  narrative_template: "Pokedex owned flag set for species {species}."
+  notes: "Catch / receive / evolve all funnel through here. SetPokedexFlag predef in pred-script."
+
+- id: pokedex_seen_flag_set
+  category: progress
+  trigger:
+    file: home/predef.asm
+    function: SetPokedexSeenFlag
+  payload:
+    species: u8
+  narrative_template: "Pokedex seen flag set for species {species}."
+  notes: "Wild encounter, ghost reveal, trainer-mon reveal all funnel through here."
+
+- id: event_flag_set
+  category: progress
+  trigger:
+    file: engine/flag_action.asm
+    function: FlagAction
+  payload:
+    flag_id_low: u8
+    flag_id_high: u8
+  narrative_template: "Story flag {flag_id} set."
+  notes: "FlagAction handles get/set/clear. Filter to set-only (operation arg == FLAG_SET). High-volume — filter Python-side too."
+
+- id: pokemon_traded
+  category: progress
+  trigger:
+    file: engine/events/in_game_trades.asm
+    function: InGameTrade_DoTrade
+  payload:
+    gave_species: u8
+    received_species: u8
+  narrative_template: "Traded {gave_species} for {received_species}."
+
+- id: nickname_set
+  category: progress
+  trigger:
+    file: engine/menus/naming_screen.asm
+    function: SubmitNickname
+  payload:
+    naming_type: u8
+    name: text        # decoded name string
+  narrative_template: "Nickname set: '{name}'."
+
+# ---------------------------------------------------------------------------
+# BATTLE — battle state-machine transitions
+# ---------------------------------------------------------------------------
+
+- id: battle_start
+  category: battle
+  trigger:
+    file: engine/battle/core.asm
+    function: InitBattle
+  payload:
+    battle_type: u8   # wBattleType (0=normal, 1=safari, 2=old man tutorial, etc.)
+    is_trainer: u8    # 1 if trainer battle else 0
+    enemy_party_count: u8  # wEnemyPartyCount
+    enemy_first_species: u8  # wEnemyPartyMons[0]
+  narrative_template: "Battle started (trainer={is_trainer}, type={battle_type})."
+
+- id: battle_end
+  category: battle
+  trigger:
+    file: engine/battle/end_of_battle.asm
+    function: EndOfBattle
+  payload:
+    result: u8        # 0=win, 1=lose, 2=draw, 3=ran, 4=caught
+  narrative_template: "Battle ended (result={result})."
+
+- id: move_used
+  category: battle
+  trigger:
+    file: engine/battle/used_move_text.asm
+    function: PrintMoveUsedText
+  payload:
+    side: u8          # 0=player, 1=enemy
+    move_id: u8       # wPlayerMoveNum or wEnemyMoveNum
+    user_species: u8
+  narrative_template: "{side} used move #{move_id}."
+
+- id: move_missed
+  category: battle
+  trigger:
+    file: engine/battle/core.asm
+    function: MoveMissed
+  payload:
+    side: u8
+    move_id: u8
+  narrative_template: "Move #{move_id} missed."
+
+- id: damage_dealt
+  category: battle
+  trigger:
+    file: engine/battle/core.asm
+    function: ApplyDamageToEnemyPokemon
+  payload:
+    target: u8        # 0=player, 1=enemy
+    damage_low: u8    # wDamage low byte
+    damage_high: u8   # wDamage high byte
+    new_hp_low: u8    # post-write HP low
+    new_hp_high: u8   # post-write HP high
+  narrative_template: "{target} took {damage} damage."
+  notes: "Mirror hook at ApplyDamageToPlayerPokemon for the symmetric event with target=0."
+
+- id: critical_hit
+  category: battle
+  trigger:
+    file: engine/battle/core.asm
+    function: CriticalHitTest
+  payload:
+    side: u8
+  narrative_template: "A critical hit!"
+  notes: "Hook in the path that sets wCriticalHitOrOHKO."
+
+- id: type_effectiveness
+  category: battle
+  trigger:
+    file: engine/battle/display_effectiveness.asm
+    function: DisplayEffectiveness
+  payload:
+    effectiveness: u8  # wTypeEffectiveness ($05=quarter, $0A=half, $14=double, $28=quad, $00=immune)
+  narrative_template: "Effectiveness: {effectiveness}."
+
+- id: status_applied
+  category: battle
+  trigger:
+    file: engine/battle/effects.asm
+    function: StatusEffectCommon
+  payload:
+    target: u8        # 0=player, 1=enemy
+    status_bit: u8    # SLP/PSN/BRN/FRZ/PAR — value from STATUS_* constants
+  narrative_template: "{target} was afflicted with status {status_bit}."
+  notes: "Cover SleepEffect / PoisonEffect / FreezeBurnParalyzeEffect with one wrapper. Confusion is a volatile, distinct event."
+
+- id: confusion_applied
+  category: battle
+  trigger:
+    file: engine/battle/effects.asm
+    function: ConfusionEffect
+  payload:
+    target: u8
+  narrative_template: "{target} became confused."
+
+- id: stat_change
+  category: battle
+  trigger:
+    file: engine/battle/effects.asm
+    function: StatModifierEffect
+  payload:
+    target: u8
+    stat_id: u8       # 1=ATK, 2=DEF, 3=SPD, 4=SPC, 5=ACC, 6=EVA
+    direction: u8     # 0=down, 1=up
+    stages: u8        # 1 or 2
+  narrative_template: "{target}'s stat #{stat_id} changed."
+
+- id: pokemon_fainted
+  category: battle
+  trigger:
+    file: engine/battle/core.asm
+    function: FaintEnemyPokemon
+  payload:
+    side: u8          # 0=player, 1=enemy
+    species: u8
+  narrative_template: "{side} Pokemon fainted (species {species})."
+  notes: "Mirror at RemoveFaintedPlayerMon (line 1003) for side=0."
+
+- id: pokemon_switched
+  category: battle
+  trigger:
+    file: engine/battle/core.asm
+    function: EnemySendOutFirstMon
+  payload:
+    side: u8
+    new_species: u8
+    new_party_slot: u8
+  narrative_template: "{side} sent out species {new_species}."
+  notes: "Cover SwitchPlayerMon and SendOutMon path for side=0."
+
+- id: xp_gained
+  category: battle
+  trigger:
+    file: engine/battle/experience.asm
+    function: GainExperience
+  payload:
+    target_slot: u8   # wWhichPokemon
+    xp_low: u8        # 2-byte XP gained (big endian in pret)
+    xp_high: u8
+  narrative_template: "Slot {target_slot} gained {xp} XP."
+
+- id: level_up
+  category: battle
+  trigger:
+    file: engine/battle/experience.asm
+    function: GainExperience
+  payload:
+    target_slot: u8
+    new_level: u8
+  narrative_template: "Slot {target_slot} reached level {new_level}."
+  notes: "Hook inside GainExperience's level-crossing branch; emit per level gained."
+
+- id: move_learned
+  category: progress
+  trigger:
+    file: engine/pokemon/learn_move.asm
+    function: LearnMove
+  payload:
+    target_slot: u8   # wWhichPokemon
+    move_id: u8       # wMoveNum
+    slot_index: u8    # which of the 4 move slots
+  narrative_template: "Slot {target_slot} learned move #{move_id}."
+
+- id: move_forgotten
+  category: progress
+  trigger:
+    file: engine/pokemon/learn_move.asm
+    function: AbandonLearningMove
+  payload:
+    target_slot: u8
+    old_move_id: u8
+  narrative_template: "Slot {target_slot} forgot move #{old_move_id}."
+
+- id: evolution_started
+  category: progress
+  trigger:
+    file: engine/pokemon/evos_moves.asm
+    function: EvolutionAfterBattle
+  payload:
+    target_slot: u8
+    from_species: u8
+  narrative_template: "Evolution started for slot {target_slot}."
+
+- id: evolution_completed
+  category: progress
+  trigger:
+    file: engine/pokemon/evos_moves.asm
+    function: EvolveMon
+  payload:
+    target_slot: u8
+    new_species: u8
+  narrative_template: "Slot {target_slot} evolved into species {new_species}."
+
+- id: evolution_cancelled
+  category: progress
+  trigger:
+    file: engine/pokemon/evos_moves.asm
+    function: CancelEvolution
+  payload:
+    target_slot: u8
+  narrative_template: "Evolution was cancelled."
+
+- id: run_attempted
+  category: battle
+  trigger:
+    file: engine/battle/core.asm
+    function: TryRunningFromBattle
+  payload:
+    succeeded: u8     # 1 if escaped (carry set), 0 if blocked
+  narrative_template: "Run attempt: succeeded={succeeded}."
+
+- id: pokeball_thrown
+  category: battle
+  trigger:
+    file: engine/items/item_effects.asm
+    function: ItemUseBall
+  payload:
+    ball_id: u8       # wCurItem
+    target_species: u8
+  narrative_template: "Threw {ball_id} at {target_species}."
+
+- id: pokemon_caught
+  category: battle
+  trigger:
+    file: engine/items/item_effects.asm
+    function: ItemUseBall
+  payload:
+    species: u8
+    level: u8
+    ball_id: u8
+  narrative_template: "Caught species {species} at lvl {level}."
+  notes: "Emit on the success branch of ItemUseBall (after wCaughtMon set)."
+
+- id: safari_action
+  category: battle
+  trigger:
+    file: engine/battle/safari_zone.asm
+    function: PrintSafariZoneBattleText
+  payload:
+    action: u8        # 0=ball, 1=bait, 2=rock, 3=run
+  narrative_template: "Safari action: {action}."
+
+# ---------------------------------------------------------------------------
+# META — game-level lifecycle and pull-mode snapshot
+# ---------------------------------------------------------------------------
+
+- id: title_screen_shown
+  category: meta
+  trigger:
+    file: engine/movie/title.asm
+    function: DisplayTitleScreen
+  payload: {}
+  narrative_template: "Title screen displayed."
+
+- id: new_game_started
+  category: meta
+  trigger:
+    file: engine/menus/main_menu.asm
+    function: StartNewGame
+  payload: {}
+  narrative_template: "New game started."
+
+- id: continue_game
+  category: meta
+  trigger:
+    file: engine/menus/save.asm
+    function: LoadSAV
+  payload: {}
+  narrative_template: "Save loaded — continuing."
+
+- id: save_written
+  category: meta
+  trigger:
+    file: engine/menus/save.asm
+    function: SaveGameData
+  payload:
+    play_time_hours: u8     # hPlayTimeHours
+    play_time_minutes: u8   # wPlayTimeMinutes
+  narrative_template: "Game saved (play time {play_time_hours}:{play_time_minutes})."
+
+- id: oak_speech_done
+  category: meta
+  trigger:
+    file: engine/movie/oak_speech/oak_speech.asm
+    function: OakSpeech
+  payload: {}
+  narrative_template: "Oak's intro speech finished."
+  notes: "Emit at the tail of OakSpeech before falling into the player-name prompt."
+
+- id: hall_of_fame_entered
+  category: meta
+  trigger:
+    file: engine/movie/hall_of_fame.asm
+    function: AnimateHallOfFame
+  payload: {}
+  narrative_template: "Entered the Hall of Fame!"
+
+- id: credits_shown
+  category: meta
+  trigger:
+    file: engine/movie/credits.asm
+    function: Credits
+  payload: {}
+  narrative_template: "Credits rolling."
+
+- id: snapshot
+  category: meta
+  trigger:
+    file: home.asm
+    function: MainLoop
+  payload:
+    map_id: u8
+    x: u8
+    y: u8
+    direction: u8
+    party_count: u8
+    party_species: bytes  # 6 bytes (PARTY_LENGTH); padded with 0xFF
+    party_levels: bytes   # 6 bytes
+    badges: u8            # wObtainedBadges
+    money_low: u8
+    money_mid: u8
+    money_high: u8
+    player_state: u8      # 0=walking, 1=cycling, 2=surfing
+  narrative_template: "Snapshot: map {map_id} ({x},{y}), party {party_count}, badges 0x{badges:02x}."
+  notes: "Pull-mode. Main loop checks wSnapshotRequest each frame; non-zero triggers emit + clear. Frame the payload as length-prefixed since it exceeds typical sizes (see notes in task 03)."
