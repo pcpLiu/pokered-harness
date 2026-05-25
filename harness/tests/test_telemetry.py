@@ -9,6 +9,9 @@ from harness.telemetry import (
     parse_snapshot,
     SNAPSHOT_PAYLOAD_LEN,
     SNAPSHOT_ID,
+    MENU_CURSOR_ID,
+    MENU_CURSOR_PAYLOAD_LEN,
+    MENU_CURSOR_TEXT_BYTES,
 )
 
 
@@ -128,8 +131,14 @@ def test_parser_text_display_followed_by_other_event():
 # Snapshot
 # ---------------------------------------------------------------------------
 
-def _make_snapshot_payload(*, in_battle: int = 0, party_count: int = 0) -> bytes:
-    """Build a synthetic 200-byte snapshot payload for testing."""
+def _make_snapshot_payload(
+    *,
+    in_battle: int = 0,
+    party_count: int = 0,
+    cursor_index: int = 0,
+    max_menu_item: int = 0,
+) -> bytes:
+    """Build a synthetic 202-byte snapshot payload for testing."""
     p = bytearray(SNAPSHOT_PAYLOAD_LEN)
     # World
     p[0] = 38   # map_id
@@ -184,11 +193,16 @@ def _make_snapshot_payload(*, in_battle: int = 0, party_count: int = 0) -> bytes
         p[197] = 0       # status
         p[198] = 4       # type1
         p[199] = 4       # type2
+    # Menu cursor
+    p[200] = cursor_index
+    p[201] = max_menu_item
     return bytes(p)
 
 
 def test_parse_snapshot_overworld():
-    payload = _make_snapshot_payload(in_battle=0, party_count=1)
+    payload = _make_snapshot_payload(
+        in_battle=0, party_count=1, cursor_index=2, max_menu_item=5
+    )
     snap = parse_snapshot(payload, frame=1000)
     assert snap.map_id == 38
     assert snap.last_map == 37
@@ -209,6 +223,8 @@ def test_parse_snapshot_overworld():
     assert snap.pokedex_owned == [1]
     assert snap.pokedex_seen == [1, 16]
     assert snap.event_flags == bytes(40)
+    assert snap.cursor_index == 2
+    assert snap.max_menu_item == 5
 
 
 def test_parse_snapshot_battle_context():
@@ -248,7 +264,85 @@ def test_parser_snapshot_split_across_feeds():
 def test_parser_snapshot_length_mismatch_raises():
     import pytest
     with pytest.raises(ValueError):
-        parse_snapshot(b"\x00" * 199)
+        parse_snapshot(b"\x00" * (SNAPSHOT_PAYLOAD_LEN - 1))
+
+
+# ---------------------------------------------------------------------------
+# Parser — menu_cursor
+# ---------------------------------------------------------------------------
+
+def _make_menu_cursor_payload(
+    *,
+    cursor_index: int = 0,
+    max_menu_item: int = 0,
+    text_box_id: int = 0,
+    text_bytes: bytes = b"",
+) -> bytes:
+    """Build a synthetic 19-byte menu_cursor payload. `text_bytes` is padded
+    with $7F (space) to fill the 16-byte text window."""
+    padding = bytes([0x7F]) * (MENU_CURSOR_TEXT_BYTES - len(text_bytes))
+    return bytes([cursor_index, max_menu_item, text_box_id]) + text_bytes + padding
+
+
+def test_parser_menu_cursor_basic():
+    parser = TelemetryParser()
+    # cursor=1, max=4, box=2, option "ITEM"
+    item_text = bytes([0x88, 0x93, 0x84, 0x8C])  # I T E M
+    payload = _make_menu_cursor_payload(
+        cursor_index=1, max_menu_item=4, text_box_id=2, text_bytes=item_text
+    )
+    raw = bytes([MENU_CURSOR_ID, MENU_CURSOR_PAYLOAD_LEN]) + payload
+    events = parser.feed(raw, frame=77)
+    assert len(events) == 1
+    e = events[0]
+    assert e.id == "menu_cursor"
+    assert e.category == "menu"
+    assert e.frame == 77
+    assert e.payload["cursor_index"] == 1
+    assert e.payload["max_menu_item"] == 4
+    assert e.payload["text_box_id"] == 2
+    assert e.payload["option_text"] == "ITEM"
+
+
+def test_parser_menu_cursor_trims_trailing_spaces():
+    parser = TelemetryParser()
+    # 16-byte buffer with only "POKéDEX" (7 chars) and rest spaces
+    # P O K é D E X — using internal charmap codes
+    text = bytes([0x8F, 0x8E, 0x8A, 0xBA, 0x83, 0x84, 0x97])  # POKéDEX
+    payload = _make_menu_cursor_payload(
+        cursor_index=0, max_menu_item=6, text_box_id=8, text_bytes=text
+    )
+    raw = bytes([MENU_CURSOR_ID, MENU_CURSOR_PAYLOAD_LEN]) + payload
+    events = parser.feed(raw, frame=0)
+    assert events[0].payload["option_text"] == "POKéDEX"
+
+
+def test_parser_menu_cursor_split_across_feeds():
+    parser = TelemetryParser()
+    item_text = bytes([0x88, 0x93, 0x84, 0x8C])
+    payload = _make_menu_cursor_payload(
+        cursor_index=2, max_menu_item=5, text_box_id=1, text_bytes=item_text
+    )
+    raw = bytes([MENU_CURSOR_ID, MENU_CURSOR_PAYLOAD_LEN]) + payload
+    half = len(raw) // 2
+    assert parser.feed(raw[:half], frame=1) == []
+    events = parser.feed(raw[half:], frame=2)
+    assert len(events) == 1
+    assert events[0].id == "menu_cursor"
+    assert events[0].payload["cursor_index"] == 2
+    assert events[0].payload["option_text"] == "ITEM"
+
+
+def test_parser_menu_cursor_followed_by_other_event():
+    parser = TelemetryParser()
+    text = bytes([0x80])  # "A"
+    raw = (
+        bytes([MENU_CURSOR_ID, MENU_CURSOR_PAYLOAD_LEN])
+        + _make_menu_cursor_payload(text_bytes=text)
+        + bytes([0x49])  # title_screen_shown
+    )
+    events = parser.feed(raw, frame=11)
+    assert [e.id for e in events] == ["menu_cursor", "title_screen_shown"]
 
 
 def test_parser_reset_clears_buffer():

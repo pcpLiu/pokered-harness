@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pokemon Red Harness — Server Overview</title>
+<style>
+  :root {
+    --bg: #fafaf9;
+    --fg: #1c1917;
+    --muted: #57534e;
+    --border: #e7e5e4;
+    --card: #ffffff;
+    --accent: #1d4ed8;
+    --warn: #b45309;
+    --good: #15803d;
+    --code-bg: #f5f5f4;
+  }
+  html, body { background: var(--bg); color: var(--fg); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+    line-height: 1.55;
+    font-size: 15px;
+  }
+  h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 20px; margin: 56px 0 14px; letter-spacing: -0.01em; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 16px; margin: 28px 0 8px; color: var(--accent); }
+  p.lede { color: var(--muted); margin: 0 0 8px; }
+  p { margin: 8px 0 14px; }
+  code, .mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin: 24px 0 8px;
+  }
+  .stat {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .stat .num { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+  .stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 8px 0 20px;
+  }
+  th, td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { background: #f5f5f4; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  td.method { white-space: nowrap; color: var(--accent); font-family: ui-monospace, monospace; font-size: 12.5px; font-weight: 600; }
+  td.path { white-space: nowrap; font-family: ui-monospace, monospace; font-size: 12.5px; }
+  td.desc { color: var(--fg); }
+  td.note { color: var(--muted); font-size: 13px; }
+
+  .diagram-wrap {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin: 12px 0 20px;
+    overflow-x: auto;
+  }
+  .diagram-wrap svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .legend { font-size: 13px; color: var(--muted); margin-top: 6px; }
+
+  ul.observe { columns: 2; column-gap: 28px; padding-left: 20px; margin: 8px 0 20px; }
+  ul.observe li { margin: 0 0 6px; break-inside: avoid; }
+
+  .pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; vertical-align: middle; margin-left: 6px; }
+  .pill-warn { background: #fef3c7; color: #92400e; }
+  .pill-good { background: #dcfce7; color: #166534; }
+  .pill-note { background: #e0e7ff; color: #3730a3; }
+
+  .gap-note {
+    background: #fefce8;
+    border: 1px solid #fde68a;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .gap-note b { color: var(--warn); }
+</style>
+</head>
+<body>
+
+<h1>Pokemon Red Harness — Server Overview</h1>
+<p class="lede">Snapshot of what the harness HTTP server currently exposes, what an LLM agent can observe through it, and how data flows from the instrumented ROM all the way back to the agent.</p>
+
+<div class="stats">
+  <div class="stat"><div class="num">22</div><div class="label">LLM-facing routes</div></div>
+  <div class="stat"><div class="num">80</div><div class="label">distinct event types</div></div>
+  <div class="stat"><div class="num">200 B</div><div class="label">snapshot payload</div></div>
+  <div class="stat"><div class="num">disk</div><div class="label">is source of truth</div></div>
+</div>
+
+<h2>Data flow</h2>
+<p>An action (button press / wait) flows down through the stack; observations (events, snapshots) flow back up. The session folder on disk is authoritative — server can be killed and resumed without losing a session.</p>
+
+<div class="diagram-wrap">
+<svg viewBox="0 0 780 780" xmlns="http://www.w3.org/2000/svg"
+     style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; font-size: 12px;">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1c1917"/>
+    </marker>
+    <marker id="arrm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57534e"/>
+    </marker>
+  </defs>
+
+  <!-- LLM Agent -->
+  <rect x="280" y="20" width="220" height="60" rx="10" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+  <text x="390" y="46" text-anchor="middle" font-weight="700" font-size="14">LLM Agent</text>
+  <text x="390" y="64" text-anchor="middle" fill="#57534e">Claude · GPT · any HTTP client</text>
+
+  <!-- Server -->
+  <rect x="140" y="140" width="500" height="84" rx="10" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+  <text x="390" y="168" text-anchor="middle" font-weight="700" font-size="14">Harness HTTP Server (FastAPI)</text>
+  <text x="390" y="188" text-anchor="middle" fill="#1e3a8a">22 routes • GET=docs · POST=execute</text>
+  <text x="390" y="206" text-anchor="middle" fill="#1e3a8a" font-size="11">X-Session-Id header on session-scoped routes · SSE on /events/stream</text>
+
+  <!-- Session -->
+  <rect x="40" y="280" width="330" height="180" rx="10" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
+  <text x="205" y="306" text-anchor="middle" font-weight="700" font-size="14">Session (in-memory)</text>
+  <text x="205" y="328" text-anchor="middle" font-size="11" fill="#14532d">one per session_id · TTL-cached</text>
+  <line x1="60" y1="340" x2="350" y2="340" stroke="#15803d" stroke-dasharray="3,3" opacity="0.4"/>
+  <text x="205" y="360" text-anchor="middle">event buffer • SSE subscribers</text>
+  <text x="205" y="378" text-anchor="middle">polling clock (snapshot every N frames)</text>
+  <text x="205" y="396" text-anchor="middle">after-action persistence policy</text>
+  <text x="205" y="424" text-anchor="middle" fill="#57534e" font-size="11">press_button() · wait() · snapshot_now()</text>
+  <text x="205" y="440" text-anchor="middle" fill="#57534e" font-size="11">save_named_state() · search_text()</text>
+
+  <!-- Session folder -->
+  <rect x="410" y="280" width="330" height="180" rx="10" fill="#fef9c3" stroke="#a16207" stroke-width="2"/>
+  <text x="575" y="306" text-anchor="middle" font-weight="700" font-size="14">sessions/&lt;id&gt;/ (disk)</text>
+  <text x="575" y="324" text-anchor="middle" font-size="11" fill="#713f12">source of truth</text>
+  <line x1="430" y1="338" x2="720" y2="338" stroke="#a16207" stroke-dasharray="3,3" opacity="0.4"/>
+  <text x="575" y="358" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12">meta.json</text>
+  <text x="575" y="376" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12">current.state</text>
+  <text x="575" y="394" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12">events.jsonl · actions.jsonl</text>
+  <text x="575" y="412" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12">snapshots/&lt;frame&gt;.json</text>
+  <text x="575" y="430" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12">saves/&lt;name&gt;.state</text>
+  <text x="575" y="448" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12">journal.md</text>
+
+  <!-- Emulator -->
+  <rect x="40" y="520" width="330" height="100" rx="10" fill="#fce7f3" stroke="#9d174d" stroke-width="2"/>
+  <text x="205" y="548" text-anchor="middle" font-weight="700" font-size="14">PyBoy 2.x Emulator</text>
+  <text x="205" y="568" text-anchor="middle">+ Instrumented Pokemon Red ROM</text>
+  <text x="205" y="586" text-anchor="middle" fill="#57534e" font-size="11">(pokered-fork, built with LLM_TELEMETRY=1)</text>
+  <text x="205" y="606" text-anchor="middle" fill="#57534e" font-size="11">PC breakpoint on EmitEventByte captures every event byte</text>
+
+  <!-- Parser -->
+  <rect x="410" y="520" width="330" height="100" rx="10" fill="#e0e7ff" stroke="#4338ca" stroke-width="2"/>
+  <text x="575" y="548" text-anchor="middle" font-weight="700" font-size="14">TelemetryParser</text>
+  <text x="575" y="568" text-anchor="middle">events.yaml (80 event types)</text>
+  <text x="575" y="586" text-anchor="middle" fill="#57534e" font-size="11">charmap decoder · 200-byte snapshot decoder</text>
+  <text x="575" y="606" text-anchor="middle" fill="#57534e" font-size="11">emits structured Event / Snapshot objects</text>
+
+  <!-- LLM ↔ Server -->
+  <line x1="390" y1="80" x2="390" y2="138" stroke="#1c1917" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="400" y="115" font-size="11" fill="#1c1917">HTTP POST {body}</text>
+
+  <line x1="345" y1="138" x2="345" y2="82" stroke="#57534e" stroke-width="1.5" marker-end="url(#arrm)" stroke-dasharray="4,3"/>
+  <text x="296" y="115" font-size="11" fill="#57534e" text-anchor="end">JSON response · SSE</text>
+
+  <!-- Server → Session -->
+  <line x1="320" y1="224" x2="240" y2="278" stroke="#1c1917" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="240" y="252" font-size="11" fill="#1c1917">resolve session</text>
+
+  <!-- Session ↔ folder -->
+  <line x1="370" y1="360" x2="408" y2="360" stroke="#1c1917" stroke-width="2" marker-end="url(#arr)"/>
+  <line x1="408" y1="390" x2="370" y2="390" stroke="#57534e" stroke-width="1.5" marker-end="url(#arrm)" stroke-dasharray="4,3"/>
+  <text x="389" y="350" font-size="11" fill="#1c1917" text-anchor="middle">persist</text>
+  <text x="389" y="408" font-size="11" fill="#57534e" text-anchor="middle">reload</text>
+
+  <!-- Session → Emulator -->
+  <line x1="205" y1="460" x2="205" y2="518" stroke="#1c1917" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="215" y="490" font-size="11" fill="#1c1917">tick · read RAM</text>
+  <text x="215" y="504" font-size="11" fill="#1c1917">write wSnapshotRequest</text>
+
+  <!-- Emulator → Parser -->
+  <line x1="370" y1="570" x2="408" y2="570" stroke="#1c1917" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="389" y="562" font-size="11" fill="#1c1917" text-anchor="middle">telemetry bytes</text>
+
+  <!-- Parser → Session (loop back up) -->
+  <path d="M 575 520 C 575 480, 575 470, 370 440" fill="none" stroke="#1c1917" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="525" y="478" font-size="11" fill="#1c1917">events + snapshot</text>
+
+</svg>
+</div>
+
+<p class="legend"><b>Reading the diagram.</b> Solid arrows = data going down (action / request). Dashed arrows = data coming back up (response / reload). Turn-based: the emulator only ticks during an action POST. Between calls, the game is frozen and the LLM has unbounded thinking time.</p>
+
+<h2>What the LLM can observe</h2>
+<p>Across the routes, the agent has access to every player-observable aspect of the game. The same data is available three ways: live during an action (events in the POST response), pulled on demand (snapshot via <code>/state</code>, screen via <code>/screen</code>, map via <code>/map</code>), or queried from history (<code>/events</code>, <code>/snapshots/history</code>, <code>/search/*</code>).</p>
+
+<ul class="observe">
+  <li><b>Dialogue and on-screen text</b> — every <code>text_display</code> event carries the full decoded string (no need to read the tilemap).</li>
+  <li><b>Player position</b> — x, y, facing direction, current map id.</li>
+  <li><b>Movement</b> — <code>player_moved</code>, <code>map_loaded</code>, <code>ledges</code>, <code>doors</code>.</li>
+  <li><b>Party state</b> — 6 slots × (species, level, hp_cur, hp_max, status, type1, type2).</li>
+  <li><b>Active battle</b> — enemy species, level, current HP, types; player's active mon and its 4 moves.</li>
+  <li><b>Inventory</b> — bag with up to 20 items, plus quantities.</li>
+  <li><b>Money</b> and <b>badges</b> bitfield.</li>
+  <li><b>Pokedex</b> — owned and seen bitfields (151 species each).</li>
+  <li><b>Event flags</b> — game-progression bits (story checkpoints).</li>
+  <li><b>Menus</b> — open/close events plus snapshot's <code>text_box_id</code>.</li>
+  <li><b>Map structure</b> — static layout (warps, signs, NPC spawn points) for any of 248 maps; live NPC positions on current map.</li>
+  <li><b>Screen pixels</b> — 160×144 PNG snapshot at any frame.</li>
+  <li><b>History queries</b> — past events filtered by id/category/frame range; past snapshots; full-text search over dialogue.</li>
+  <li><b>Self-managed memory</b> — append-only <code>journal.md</code> survives across context resets.</li>
+</ul>
+
+<h2>Route catalog</h2>
+<p>All routes follow the GET-as-docs / POST-as-execute pattern. Hitting <code>GET /&lt;route&gt;</code> returns a JSON doc with params, returns, and an example. Hitting <code>POST</code> executes.</p>
+
+<h3>Lifecycle <span class="pill pill-good">no session header</span></h3>
+<table>
+  <thead><tr><th>Method</th><th>Path</th><th>Purpose</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td class="method">GET</td><td class="path">/</td><td class="desc">Server index — version, header convention, route list.</td><td class="note">Always start here.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/sessions/start</td><td class="desc">Create a new session. Returns <code>session_id</code> and a pre-formatted <code>header_to_use</code> string.</td><td class="note">Optional name; otherwise an adjective-noun-hex id is generated.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/sessions/list</td><td class="desc">List every session folder on disk with metadata.</td><td class="note">For agent self-discovery of past runs.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/sessions/end</td><td class="desc">Gracefully end the session; persist final state.</td><td class="note">Once ended, session is read-only.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/sessions/delete</td><td class="desc">Remove the session's folder entirely.</td><td class="note">Throws away events, snapshots, journal.</td></tr>
+  </tbody>
+</table>
+
+<h3>Actions <span class="pill pill-note">advances game state</span></h3>
+<table>
+  <thead><tr><th>Method</th><th>Path</th><th>Purpose</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td class="method">POST</td><td class="path">/press</td><td class="desc">Press one of a/b/up/down/left/right/start/select. Supports <code>count</code> for repeated presses.</td><td class="note">Returns all events fired during the press.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/wait</td><td class="desc">Advance N frames without input. Records as an action.</td><td class="note">Use to let animations or trainer scripts finish.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/tick</td><td class="desc">Advance N frames without recording. For viewer animation.</td><td class="note">Agents should use /wait instead.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/walk</td><td class="desc">Walk N tiles in a direction. Aborts on battle_start, npc_interaction_start, menu_open, map_loaded.</td><td class="note">Composite — internally a sequence of /press.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/talk</td><td class="desc">Press A (repeatable). Models "talking to the NPC you're facing".</td><td class="note">Position with /walk first.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/menu/select</td><td class="desc">Navigate a menu cursor to a target index or option name and press A.</td><td class="note">Supported menus include Start menu and battle menu.</td></tr>
+  </tbody>
+</table>
+
+<h3>Live observation <span class="pill pill-note">pull current state</span></h3>
+<table>
+  <thead><tr><th>Method</th><th>Path</th><th>Purpose</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td class="method">POST</td><td class="path">/state</td><td class="desc">Fresh 200-byte snapshot — party, position, badges, inventory, pokedex, event flags, battle state.</td><td class="note">Times out outside the overworld loop (intros, battles, menus).</td></tr>
+    <tr><td class="method">POST</td><td class="path">/map</td><td class="desc">Static map layout for any of 248 maps. Empty body returns the player's current map merged with live NPC positions.</td><td class="note">Use to enrich a <code>map_loaded</code> event.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/screen</td><td class="desc">Current 160×144 screen as base64 PNG.</td><td class="note">For visual fallback when telemetry isn't enough.</td></tr>
+  </tbody>
+</table>
+
+<h3>History &amp; search <span class="pill pill-note">query past observations</span></h3>
+<table>
+  <thead><tr><th>Method</th><th>Path</th><th>Purpose</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td class="method">POST</td><td class="path">/events</td><td class="desc">Query the persisted event log — filter by <code>since_frame</code>, <code>until_frame</code>, <code>categories</code>, <code>limit</code>.</td><td class="note">Reads <code>events.jsonl</code>.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/snapshots/history</td><td class="desc">Past polled snapshots from disk. Supports <code>fields</code> projection to save bandwidth.</td><td class="note">One file per polled snapshot.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/snapshots/poll</td><td class="desc">Get or set the snapshot polling interval (frames). Persists to <code>meta.json</code>.</td><td class="note">0 disables auto-polling.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/search/text</td><td class="desc">Full-text substring search over <code>text_display</code> events.</td><td class="note">Answers "have I heard this before?"</td></tr>
+    <tr><td class="method">POST</td><td class="path">/search/events</td><td class="desc">Filter the event log by event ids, categories, frame range.</td><td class="note">e.g. all <code>battle_end</code> events.</td></tr>
+  </tbody>
+</table>
+
+<h3>Streaming <span class="pill pill-note">push events as they happen</span></h3>
+<table>
+  <thead><tr><th>Method</th><th>Path</th><th>Purpose</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td class="method">POST</td><td class="path">/events/stream</td><td class="desc">Server-Sent Events stream of live events. Stays open until client disconnects.</td><td class="note">Turn-based — events flow only during action POSTs.</td></tr>
+  </tbody>
+</table>
+
+<h3>Persistence <span class="pill pill-warn">save / load / journal</span></h3>
+<table>
+  <thead><tr><th>Method</th><th>Path</th><th>Purpose</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td class="method">POST</td><td class="path">/save</td><td class="desc">Save current emulator state to a named slot under <code>saves/&lt;name&gt;.state</code>.</td><td class="note">PyBoy save state — works at any frame, mid-battle OK.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/load</td><td class="desc">Restore from a named save slot.</td><td class="note">404 with the list of available slots on miss.</td></tr>
+    <tr><td class="method">POST</td><td class="path">/journal</td><td class="desc"><code>op=read</code> or <code>op=append</code> — agent's persistent notes (<code>journal.md</code>).</td><td class="note">Survives context resets and session reloads.</td></tr>
+  </tbody>
+</table>
+
+<h2>What's intentionally <em>not</em> here</h2>
+<p>To keep the harness minimal and observation-based, the current server does not expose:</p>
+<ul>
+  <li>A narrative renderer (events are raw with decoded text fields; profile-based "naive vs aware" rewriting is a follow-on).</li>
+  <li>Pathfinding (<code>/walk_to(x,y)</code>) — agent should explore.</li>
+  <li>Pokemon-specific helpers (<code>/catch</code>, <code>/heal</code>) — agent figures these out by observation.</li>
+  <li>Cross-session "canonical" save points (current saves are session-scoped; benchmark presets are a planned addition).</li>
+  <li>Authentication — V1 is localhost only.</li>
+</ul>
+
+<div class="gap-note">
+  <b>Save/load UX gaps worth knowing.</b>
+  <code>/save</code> and <code>/load</code> work, but there is no <code>/saves/list</code> route yet — the slot list is only exposed via the 404 body of a failed load. There is also no per-save metadata (note, frame, timestamp) and no delete endpoint. These are easy to add when the agent starts using saves heavily.
+</div>
+
+</body>
+</html>

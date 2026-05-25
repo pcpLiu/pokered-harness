@@ -2,11 +2,13 @@
 
 This directory contains the task plan for the Pokemon Red AI Harness project.
 
-The work splits into two streams:
+The work splits into three streams:
 
-1. **Pokemon Red source modifications** (Tasks 01-03) — done. Fork pret/pokered and add a telemetry channel that emits events via the Game Boy serial port plus a 200-byte snapshot pulled via WRAM sentinel. See `IMPLEMENTATION.md` for as-built status.
+1. **Pokemon Red source modifications** (Tasks 01-03) — done. Fork pret/pokered and add a telemetry channel that emits events via the Game Boy serial port plus a snapshot pulled via WRAM sentinel. See `IMPLEMENTATION.md` for as-built status.
 
-2. **HTTP harness server** (Tasks 04-08) — current work. Build a session-isolated, self-documenting HTTP server that lets any agent (LLM, scripted, RL) drive the instrumented ROM.
+2. **HTTP harness server** (Tasks 04-08) — done. Session-isolated, self-documenting HTTP server that lets any agent (LLM, scripted, RL) drive the instrumented ROM.
+
+3. **Follow-on extensions** (Tasks 09+) — current. Targeted feature additions to close observability gaps surfaced once agents started playing through the harness.
 
 ## Design context
 
@@ -32,13 +34,17 @@ Key decisions that shape the harness server (Tasks 04-08):
 2. **[02 — Telemetry Scaffolding](02-pret-fork-telemetry-scaffolding.md)** — `emit.asm`, build flag, first hook proven end-to-end. ✅
 3. **[03 — All Event Emissions](03-pret-fork-event-emissions.md)** — 46 hooks across the engine + 200-byte snapshot mechanism. ✅
 
-### Harness server (current)
+### Harness server (done)
 
-4. **[04 — Python Harness Foundation](04-python-harness-foundation.md)** — Emulator wrapper + event parser + snapshot decoder. No HTTP yet — just a callable Python module.
-5. **[05 — Session Model + Polling](05-session-model-and-polling.md)** — Folder-isolated session lifecycle, snapshot polling controller, session registry with TTL cache.
-6. **[06 — HTTP Server Core Routes](06-http-server-core-routes.md)** — FastAPI app with self-documenting routes for the basic agent loop (start, press, wait, state, events, save/load, journal).
-7. **[07 — Event Streaming + Snapshot History](07-event-streaming-and-snapshot-history.md)** — SSE event stream, snapshot history queries, runtime polling control.
-8. **[08 — Composite Actions + Search](08-composite-actions-and-search.md)** — `/walk`, `/talk`, `/menu`, plus text/event search routes.
+4. **[04 — Python Harness Foundation](04-python-harness-foundation.md)** — Emulator wrapper + event parser + snapshot decoder. ✅
+5. **[05 — Session Model + Polling](05-session-model-and-polling.md)** — Folder-isolated session lifecycle, snapshot polling, session registry. ✅
+6. **[06 — HTTP Server Core Routes](06-http-server-core-routes.md)** — FastAPI app with self-documenting routes for the basic agent loop. ✅
+7. **[07 — Event Streaming + Snapshot History](07-event-streaming-and-snapshot-history.md)** — SSE event stream, snapshot history queries, runtime polling control. ✅
+8. **[08 — Composite Actions + Search](08-composite-actions-and-search.md)** — `/walk`, `/talk`, `/menu`, plus text/event search. ✅
+
+### Follow-on extensions (current)
+
+9. **[09 — Menu Cursor Visibility](09-menu-cursor-visibility.md)** — New `menu_cursor` event with the highlighted option text + 2-byte snapshot extension (`cursor_index`, `max_menu_item`). Closes the menu observability gap surfaced during agent runs.
 
 ## Suggested order
 

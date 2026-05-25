@@ -298,15 +298,24 @@
   payload: {}
   narrative_template: "Start menu closed."
 
-- id: menu_cursor_move
+- id: menu_cursor
   category: menu
   trigger:
-    file: home/list_menu.asm
+    file: home/window.asm
     function: HandleMenuInput
   payload:
-    cursor_index: u8  # wCurrentMenuItem
-  narrative_template: "Menu cursor moved to index {cursor_index}."
-  notes: "Reusable across all list-style menus. Filter Python-side if too noisy."
+    cursor_index: u8     # wCurrentMenuItem
+    max_menu_item: u8    # wMaxMenuItem
+    text_box_id: u8      # wTextBoxID
+    option_text: text    # decoded tilemap row at cursor (trailing spaces trimmed)
+  narrative_template: "Menu cursor at index {cursor_index}/{max_menu_item}: '{option_text}'."
+  notes: |
+    Length-prefixed payload (length=19 over the wire: 3 fixed bytes + 16
+    tilemap bytes starting one tile right of wMenuCursorLocation). Python
+    side trims trailing $7F (space) tiles to recover the highlighted option
+    text. Hook fires every time HandleMenuInput's outer .loop1 iteration
+    runs in home/window.asm — covers initial menu open, in-menu navigation,
+    and re-entry from custom outer loops (start menu wrap, list-scroll, etc.).
 
 - id: bag_opened
   category: menu
@@ -847,5 +856,7 @@
     money_mid: u8
     money_high: u8
     player_state: u8      # 0=walking, 1=cycling, 2=surfing
+    cursor_index: u8      # wCurrentMenuItem — meaningful when a menu is open
+    max_menu_item: u8     # wMaxMenuItem — bound for cursor_index in current menu
   narrative_template: "Snapshot: map {map_id} ({x},{y}), party {party_count}, badges 0x{badges:02x}."
-  notes: "Pull-mode. Main loop checks wSnapshotRequest each frame; non-zero triggers emit + clear. Frame the payload as length-prefixed since it exceeds typical sizes (see notes in task 03)."
+  notes: "Pull-mode. Main loop checks wSnapshotRequest each frame; non-zero triggers emit + clear. Full wire payload is 202 bytes — see engine/telemetry/wrappers.asm for the authoritative layout. cursor_index/max_menu_item describe the most recently active menu and are stable across frames once a menu has been opened."

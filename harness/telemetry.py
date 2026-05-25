@@ -1,7 +1,7 @@
 """Telemetry parser for Pokemon Red instrumented ROM.
 
 Reads the byte stream captured at the EmitEventByte hook and turns it into
-structured Event objects per harness/events.yaml. Also decodes the 200-byte
+structured Event objects per harness/events.yaml. Also decodes the 202-byte
 snapshot dump emitted on demand via wSnapshotRequest.
 
 The wire format is:
@@ -9,7 +9,9 @@ The wire format is:
   - Most events are followed by a fixed number of payload bytes (table below,
     derived from engine/telemetry/wrappers.asm).
   - $01 (text_display) carries a variable-length string terminated by $50.
-  - $FF (snapshot) carries a 1-byte length (always 200) followed by the payload.
+  - $1C (menu_cursor) carries a 1-byte length followed by 3 fixed bytes
+    (cursor_index, max_menu_item, text_box_id) and a 16-byte tilemap window.
+  - $FF (snapshot) carries a 1-byte length (always 202) followed by the payload.
 
 If a wrapper emits fewer bytes than the YAML schema suggests, we follow the
 wrapper — bytes on the wire are authoritative.
@@ -62,7 +64,7 @@ EVENT_SPEC: dict[int, tuple[str, str, tuple[str, ...]]] = {
     # menu
     0x1A: ("menu_open",               "menu",      ()),
     0x1B: ("menu_close",              "menu",      ()),
-    0x1C: ("menu_cursor_move",        "menu",      ("cursor_index",)),
+    # 0x1C menu_cursor is length-prefixed — handled out-of-band, not via this table.
     0x1D: ("bag_opened",              "menu",      ()),
     0x1E: ("pokedex_opened",          "menu",      ()),
     0x1F: ("party_menu_opened",       "menu",      ("party_count",)),
@@ -122,7 +124,11 @@ EVENT_SPEC: dict[int, tuple[str, str, tuple[str, ...]]] = {
 
 SNAPSHOT_ID = 0xFF
 TEXT_DISPLAY_ID = 0x01
-SNAPSHOT_PAYLOAD_LEN = 200
+MENU_CURSOR_ID = 0x1C
+SNAPSHOT_PAYLOAD_LEN = 202
+MENU_CURSOR_PAYLOAD_LEN = 19  # 3 fixed bytes + 16 tilemap bytes
+MENU_CURSOR_TEXT_BYTES = 16
+SPACE_TILE = 0x7F  # charmap space — used to trim option_text padding
 
 
 @dataclass
@@ -139,7 +145,7 @@ class Event:
 
 @dataclass
 class Snapshot:
-    """Decoded 200-byte snapshot payload (layout per engine/telemetry/wrappers.asm)."""
+    """Decoded 202-byte snapshot payload (layout per engine/telemetry/wrappers.asm)."""
     frame: int
     map_id: int
     last_map: int
@@ -161,6 +167,10 @@ class Snapshot:
     pokedex_seen: list[int] = field(default_factory=list)
     event_flags: bytes = b""
     enemy: dict | None = None
+    # Menu cursor — meaningful when text_box_id != 0 (a menu is open). When no
+    # menu is open these hold whatever the most recent menu left behind.
+    cursor_index: int = 0
+    max_menu_item: int = 0
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -194,9 +204,40 @@ def _bitfield_to_species_ids(buf: bytes) -> list[int]:
     return result
 
 
+def _parse_menu_cursor_payload(payload: bytes) -> dict:
+    """Decode the 19-byte menu_cursor payload (3 fixed bytes + 16 tilemap bytes).
+
+    The 16 tilemap bytes are charmap-encoded; trailing $7F (space) tiles are
+    padding and get trimmed before decoding. The raw bytes are also returned
+    (hex-encoded) for diagnostics.
+    """
+    if len(payload) < 3:
+        return {
+            "cursor_index": 0,
+            "max_menu_item": 0,
+            "text_box_id": 0,
+            "option_text": "",
+            "raw": payload.hex(),
+        }
+    cursor_index = payload[0]
+    max_menu_item = payload[1]
+    text_box_id = payload[2]
+    text_bytes = payload[3:3 + MENU_CURSOR_TEXT_BYTES]
+    # Trim trailing space tiles; option text is the leading non-padding run.
+    trimmed = text_bytes.rstrip(bytes([SPACE_TILE]))
+    option_text = decode_text(trimmed).rstrip()
+    return {
+        "cursor_index": cursor_index,
+        "max_menu_item": max_menu_item,
+        "text_box_id": text_box_id,
+        "option_text": option_text,
+        "raw": text_bytes.hex(),
+    }
+
+
 def parse_snapshot(payload: bytes, frame: int = 0) -> Snapshot:
-    """Decode a 200-byte snapshot payload. The header bytes ($FF $C8) are not
-    expected here — pass just the 200 payload bytes."""
+    """Decode a 202-byte snapshot payload. The header bytes ($FF $CA) are not
+    expected here — pass just the 202 payload bytes."""
     if len(payload) != SNAPSHOT_PAYLOAD_LEN:
         raise ValueError(
             f"snapshot payload must be {SNAPSHOT_PAYLOAD_LEN} bytes, got {len(payload)}"
@@ -274,6 +315,10 @@ def parse_snapshot(payload: bytes, frame: int = 0) -> Snapshot:
             "type2":     p[199],
         }
 
+    # Menu cursor (2 bytes)
+    cursor_index   = p[200]
+    max_menu_item  = p[201]
+
     return Snapshot(
         frame=frame,
         map_id=map_id,
@@ -296,6 +341,8 @@ def parse_snapshot(payload: bytes, frame: int = 0) -> Snapshot:
         pokedex_seen=pokedex_seen,
         event_flags=event_flags,
         enemy=enemy,
+        cursor_index=cursor_index,
+        max_menu_item=max_menu_item,
     )
 
 
@@ -366,6 +413,22 @@ class TelemetryParser:
             snap = parse_snapshot(payload, frame=frame)
             self._last_snapshot = snap
             return Event(id="snapshot", category="meta", payload=snap.to_dict(), frame=frame)
+
+        # menu_cursor — $1C then 1-byte length, then payload (3 fixed + 16 text).
+        if first == MENU_CURSOR_ID:
+            if len(self._buf) < 2:
+                return None
+            length = self._buf[1]
+            if len(self._buf) < 2 + length:
+                return None
+            payload = bytes(self._buf[2:2 + length])
+            del self._buf[:2 + length]
+            return Event(
+                id="menu_cursor",
+                category="menu",
+                payload=_parse_menu_cursor_payload(payload),
+                frame=frame,
+            )
 
         # text_display — $01 then bytes up to and including $50 terminator.
         if first == TEXT_DISPLAY_ID:

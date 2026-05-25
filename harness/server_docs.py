@@ -255,7 +255,7 @@ ROUTE_DOCS: dict[str, dict] = {
         "path": "/state",
         "description": (
             "Pull a fresh full-state snapshot from the running ROM. Triggers a "
-            "wSnapshotRequest write; the engine emits a 200-byte payload on its "
+            "wSnapshotRequest write; the engine emits a 202-byte payload on its "
             "next PollSnapshot tick (next OverworldLoop iteration). Returns the "
             "decoded Snapshot object. Note: during intros, battles, or menus, "
             "PollSnapshot isn't running and this can time out — wait until the "
@@ -264,7 +264,15 @@ ROUTE_DOCS: dict[str, dict] = {
         "requires_header": SESSION_HEADER,
         "params": {},
         "returns": {
-            "snapshot": "Decoded snapshot fields. See engine/telemetry/wrappers.asm for layout."
+            "snapshot": (
+                "Decoded snapshot fields. See engine/telemetry/wrappers.asm for "
+                "the authoritative byte layout. Notable fields: map_id, x, y, "
+                "direction, in_battle, text_box_id, party (with hp/level/types), "
+                "money, badges, bag, pokedex_owned/seen, event_flags, enemy "
+                "(when in_battle != 0), and cursor_index / max_menu_item "
+                "(meaningful when text_box_id != 0 — these reflect the most "
+                "recently active menu's cursor position and option count)."
+            )
         },
         "example": {
             "request": {},
@@ -274,6 +282,8 @@ ROUTE_DOCS: dict[str, dict] = {
                     "map_id": 38, "x": 5, "y": 6, "direction": 4,
                     "party_count": 1, "money": 3000, "badges": 0,
                     "in_battle": 0,
+                    "text_box_id": 0,
+                    "cursor_index": 0, "max_menu_item": 0,
                 }
             },
         },
@@ -507,7 +517,11 @@ ROUTE_DOCS: dict[str, dict] = {
         "description": (
             "Navigate a menu cursor to a target and press A. Supply either "
             "'target_index' (numeric) or 'target' (string match against visible options "
-            "in supported menus). Returns 400 with the visible options if no match."
+            "in supported menus). Returns 400 with the visible options if no match. "
+            "Note: live cursor state is also observable via the menu_cursor event "
+            "(emitted on every cursor change with cursor_index, max_menu_item, "
+            "text_box_id, and the highlighted option_text decoded from the tilemap) "
+            "and via the snapshot's cursor_index / max_menu_item fields."
         ),
         "requires_header": SESSION_HEADER,
         "params": {
