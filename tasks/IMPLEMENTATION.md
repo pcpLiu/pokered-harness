@@ -121,10 +121,11 @@ I?" but not for "what's my current HP, am I in a battle, what does my
 inventory look like?" Combined with the deferred event hooks, the LLM
 would have had real gaps in its picture.
 
-**Change:** Expanded `EmitEvent_Snapshot` from 22 to **200 bytes** of
-payload. Verified by a PyBoy decode test.
+**Change:** Expanded `EmitEvent_Snapshot` from 22 to **202 bytes** of
+payload (200 in the original expansion, +2 more in Task 09 for menu
+cursor). Verified by a PyBoy decode test.
 
-**New payload layout (full table in CHECKLIST.md):**
+**Payload layout (full table in CHECKLIST.md):**
 
 | Offset | Size | Field |
 |--------|------|-------|
@@ -138,11 +139,75 @@ payload. Verified by a PyBoy decode test.
 | 132-150| 19   | pokedex_seen (151 bits) |
 | 151-190| 40   | event_flags (NUM_EVENTS bits) |
 | 191-199| 9    | enemy: species, level, hp (2), max_hp (2), status, type1, type2 |
+| 200    | 1    | cursor_index (wCurrentMenuItem) |
+| 201    | 1    | max_menu_item (wMaxMenuItem) |
 
 `in_battle` (offset 6) signals when the battle-context bytes (191-199) are
-meaningful vs. stale.
+meaningful vs. stale. Likewise, `text_box_id` (offset 7) signals when the
+menu cursor bytes (200-201) reflect a currently-open menu.
 
 HP / Max HP fields are big-endian per pret convention.
+
+## Task 09 — Menu cursor visibility ✅
+
+**Motivation:** The agent could tell *that* a menu was open (via
+`text_box_id` / `menu_open`) but not *where the cursor was* or *what
+option was highlighted*. `wCurrentMenuItem` lived in WRAM, used internally
+by `/menu/select`, but never surfaced.
+
+**Engine change:** Renamed the deferred `EVENT_MENU_CURSOR_MOVE` slot
+(`$1C`) to `EVENT_MENU_CURSOR` and expanded its payload to a
+length-prefixed frame:
+
+  `$1C | length=$13 | cursor_index | max_menu_item | text_box_id | 16 tilemap bytes`
+
+The 16 tilemap bytes start at `wMenuCursorLocation + 1` — one tile to the
+right of the cursor arrow — and are raw charmap codes. Python trims
+trailing `$7F` (space) tiles to recover `option_text`.
+
+Single hook in `home/window.asm`: at the top of `HandleMenuInput`'s
+`.loop1`, right after `call PlaceMenuCursor` (which sets
+`wMenuCursorLocation`). The hook is a bare `farcall` (8 bytes, no
+register save/restore) because the surrounding code is sandwiched between
+two `call` instructions whose neither side relies on A/B/C/HL surviving
+across this point — every byte counts in the tight home bank.
+
+The single hook covers all menus that funnel through `HandleMenuInput`,
+including:
+
+- Start menu (`engine/menus/draw_start_menu.asm`) — wraps via re-entry.
+- Battle menu's FIGHT/ITEM/PARTY/RUN (`engine/battle/core.asm`
+  `.handleBattleMenuInput`) — both columns call `HandleMenuInput`.
+- List menus / bag / party (`home/list_menu.asm`
+  `DisplayListMenuIDLoop`) — scrolls via re-entry.
+
+**Snapshot extension:** Appended `wCurrentMenuItem` and `wMaxMenuItem`
+to the end of the snapshot payload (offsets 200-201 of the now-202-byte
+payload). `EmitEvent_Snapshot` length-prefix bumped from `$C8` (200) to
+`$CA` (202).
+
+**Python harness:** `harness/events.yaml` renames `menu_cursor_move` →
+`menu_cursor` with the full payload schema. `harness/telemetry.py` adds a
+special-case parser branch alongside snapshot and text_display for
+length-prefixed events, decodes the option_text via the existing charmap,
+and extends `Snapshot` with `cursor_index` / `max_menu_item`. Tests in
+`harness/tests/test_telemetry.py` cover the menu_cursor parser (basic,
+trim-trailing-spaces, split-across-feeds, followed-by-other-event) and
+the 202-byte snapshot decode. Server docs (`harness/server_docs.py`)
+mention the new snapshot fields under `/state` and the menu_cursor event
+under `/menu/select`.
+
+**Verification:**
+- `make compare` — vanilla build still byte-identical to upstream pret.
+- `make LLM_TELEMETRY=1` produces clean instrumented ROMs for the
+  primary targets (pokered, pokeblue, pokered_vc, pokeblue_vc).
+  pokeblue_debug overflows ROM0 — known pre-existing limitation
+  documented in `engine/telemetry/CHECKLIST.md`.
+- PyBoy smoke test (`/tmp/test_menu_cursor_smoke.py`): boots to the main
+  menu, observes `menu_cursor` with `cursor=0` and `option_text` starting
+  "NEW GAME", presses Down → `cursor=1` "OPTION".
+- `pytest harness/tests/` → 117 passed (telemetry: 22 tests, including
+  4 new menu_cursor tests and the 202-byte snapshot decode).
 
 ## Out of scope
 
